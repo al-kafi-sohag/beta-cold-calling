@@ -14,6 +14,8 @@ from backend import csv_service, call_manager
 from backend.llm_service import get_agent_reply
 from backend.tts_service import synthesize_speech
 from backend.stt_service import transcribe_audio_file
+from fastapi.responses import Response
+from backend import call_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -146,5 +148,83 @@ def get_transcript(phone: str):
         content = f.read()
     return {"phone": phone, "transcript": content}
 
+
+app.mount("/audio", StaticFiles(directory=AUDIO_TMP_DIR), name="audio")
+
+
+@app.post("/api/call/dial")
+def dial_call(phone: str = Form(...), name: str = Form(...), course_key: str = Form(...)):
+    if course_key not in COURSES:
+        raise HTTPException(400, f"Unknown course_key: {course_key}")
+
+    logger.info("DIAL — %s (%s) course=%s", name, phone, course_key)
+    call_manager.start_session(phone, name, course_key)
+
+    call_sid = call_service.place_call(phone, phone_id=phone)
+    return {"phone": phone, "call_sid": call_sid, "status": "dialing"}
+
+
+@app.post("/twiml/opening")
+def twiml_opening(phone: str):
+    try:
+        session = call_manager.get_session(phone)
+    except KeyError:
+        logger.warning("twiml_opening called with no session for %s", phone)
+        vr_error = call_service.build_final_response(
+            os.path.basename(synthesize_speech("দুঃখিত, একটি সমস্যা হয়েছে। আবার চেষ্টা করুন।")["file_path"])
+        )
+        return Response(content=vr_error, media_type="application/xml")
+
+    opener_prompt = session["history"] + [{"role": "user", "content": "কল শুরু কর।"}]
+    raw_reply, clean_reply, status, _ = get_agent_reply(opener_prompt)
+    session["history"].append({"role": "assistant", "content": raw_reply})
+    call_manager.append_opening(phone, clean_reply)
+
+    tts_result = synthesize_speech(clean_reply)
+    audio_filename = os.path.basename(tts_result["file_path"])
+
+    twiml = call_service.build_gather_response(audio_filename, "/twiml/turn", phone)
+    return Response(content=twiml, media_type="application/xml")
+
+@app.post("/twiml/turn")
+def twiml_turn(phone: str, SpeechResult: str = Form(default=""), empty: str = "0"):
+    try:
+        session = call_manager.get_session(phone)
+    except KeyError:
+        vr_error = call_service.build_final_response(
+            os.path.basename(synthesize_speech("দুঃখিত, একটি সমস্যা হয়েছে।")["file_path"])
+        )
+        return Response(content=vr_error, media_type="application/xml")
+
+    lead_text = SpeechResult.strip()
+
+    if not lead_text:
+        logger.warning("No speech captured for %s — asking to repeat", phone)
+        repeat_text = "দুঃখিত, ঠিক শুনতে পাইনি। আবার একটু বলবেন কি?"
+        tts_result = synthesize_speech(repeat_text)
+        audio_filename = os.path.basename(tts_result["file_path"])
+        twiml = call_service.build_gather_response(audio_filename, "/twiml/turn", phone)
+        return Response(content=twiml, media_type="application/xml")
+
+    raw_reply, clean_reply, status, llm_time = get_agent_reply(
+        session["history"] + [{"role": "user", "content": lead_text}]
+    )
+    call_manager.append_turn(phone, lead_text, raw_reply, clean_reply)
+
+    tts_result = synthesize_speech(clean_reply)
+    audio_filename = os.path.basename(tts_result["file_path"])
+
+    call_ended = call_manager.is_call_over(phone, status)
+
+    if call_ended:
+        session_data = call_manager.end_session(phone)
+        transcript_path = csv_service.save_transcript(phone, session_data["transcript_lines"])
+        csv_service.update_lead_status(phone, status, transcript_path)
+        logger.info("CALL END — %s — final status=%s — transcript=%s", phone, status, transcript_path)
+        twiml = call_service.build_final_response(audio_filename)
+    else:
+        twiml = call_service.build_gather_response(audio_filename, "/twiml/turn", phone)
+
+    return Response(content=twiml, media_type="application/xml")
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")

@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+tmp_audio/conv_0e10ade9c43e4ddf93b4712b77561c75.wav
+/transcripts
+/tmp_audio
+/transcripts

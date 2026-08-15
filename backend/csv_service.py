@@ -9,7 +9,7 @@ REQUIRED_COLUMNS = ["phone", "name", "course_key", "status", "notes", "transcrip
 def ensure_leads_csv():
     if not os.path.exists(LEADS_CSV_PATH):
         df = pd.DataFrame({
-            "phone": ["+8801XXXXXXXX", "+8801YYYYYYYY"],
+            "phone": ["+8801773301138", "+8801773301138"],
             "name": ["Rahim", "Karim"],
             "course_key": ["digital_marketing", "web_design"],
             "status": ["not_called", "not_called"],
@@ -21,7 +21,9 @@ def ensure_leads_csv():
 
 def read_leads():
     ensure_leads_csv()
-    return pd.read_csv(LEADS_CSV_PATH)
+    df = pd.read_csv(LEADS_CSV_PATH, dtype=str)
+    df = df.fillna("")
+    return df
 
 
 def update_lead_status(phone: str, status: str, transcript_path: str, note: str = ""):
