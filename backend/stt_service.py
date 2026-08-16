@@ -1,8 +1,9 @@
 import time
 import logging
+import httpx
 import speech_recognition as sr
 from pydub import AudioSegment
-from backend.config import STT_LANGUAGE, AUDIO_TMP_DIR
+from backend.config import STT_LANGUAGE, AUDIO_TMP_DIR, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN
 import os
 import uuid
 
@@ -52,3 +53,35 @@ def transcribe_audio_file(upload_path: str) -> dict:
         "stt_time_sec": stt_elapsed,
         "wav_path": wav_path,
     }
+
+
+def download_and_transcribe_recording(recording_url: str) -> dict:
+    """Download a Twilio call recording (given the RecordingUrl from a <Record> callback)
+    and transcribe it using the same Google STT pipeline as the browser flow."""
+    wav_url = f"{recording_url}.wav"
+    upload_path = os.path.join(AUDIO_TMP_DIR, f"twilio_rec_{uuid.uuid4().hex}.wav")
+
+    logger.info("Downloading Twilio recording from %s", wav_url)
+
+    resp = None
+    last_error = None
+    with httpx.Client(timeout=20.0) as client:
+        for attempt in range(3):
+            try:
+                resp = client.get(wav_url, auth=(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN))
+                resp.raise_for_status()
+                break
+            except Exception as e:
+                last_error = e
+                logger.warning("Recording download attempt %d failed: %s", attempt + 1, e)
+                time.sleep(1)
+
+    if resp is None:
+        raise RuntimeError(f"Failed to download Twilio recording after retries: {last_error}")
+
+    with open(upload_path, "wb") as f:
+        f.write(resp.content)
+
+    logger.info("Downloaded recording to %s (%d bytes)", upload_path, len(resp.content))
+
+    return transcribe_audio_file(upload_path)

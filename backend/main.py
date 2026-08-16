@@ -16,7 +16,7 @@ from backend.schemas import StartCallResponse, TurnResponse, LeadOut
 from backend import csv_service, call_manager, call_logs, call_service
 from backend.llm_service import get_agent_reply
 from backend.tts_service import synthesize_speech
-from backend.stt_service import transcribe_audio_file
+from backend.stt_service import transcribe_audio_file, download_and_transcribe_recording
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +48,6 @@ def _error_twiml(phone: str, reason: str) -> str:
     except Exception as e:
         logger.exception("Even fallback TTS failed for %s", phone)
         call_logs.log_event(phone, "fallback_tts_failed", f"{type(e).__name__}: {e}", level="error")
-        # Twilio's own <Say> voice — does not depend on our server/network at all
         return call_service.build_say_fallback(FALLBACK_MESSAGE)
 
 
@@ -217,8 +216,8 @@ def twiml_opening(phone: str):
         call_logs.log_event(phone, "tts_done", f"TTS generated in {round(time.time() - t1, 2)}s")
         audio_filename = os.path.basename(tts_result["file_path"])
 
-        twiml = call_service.build_gather_response(audio_filename, "/twiml/turn", phone)
-        call_logs.log_event(phone, "twiml_sent", "Sent opening Gather TwiML")
+        twiml = call_service.build_record_response(audio_filename, "/twiml/turn", phone)
+        call_logs.log_event(phone, "twiml_sent", "Sent opening Record TwiML")
         return Response(content=twiml, media_type="application/xml")
     except Exception as e:
         logger.exception("Error in /twiml/opening for %s", phone)
@@ -228,25 +227,47 @@ def twiml_opening(phone: str):
 
 
 @app.post("/twiml/turn")
-def twiml_turn(phone: str, SpeechResult: str = Form(default=""), empty: str = "0"):
+def twiml_turn(
+    phone: str,
+    RecordingUrl: str = Form(default=""),
+    RecordingDuration: str = Form(default=""),
+    empty: str = "0",
+):
     call_logs.log_event(phone, "webhook_hit", f"Twilio hit /twiml/turn (empty={empty})")
     try:
         session = call_manager.get_session(phone)
     except KeyError:
         return Response(content=_error_twiml(phone, "no active session"), media_type="application/xml")
 
-    lead_text = SpeechResult.strip()
-
     try:
+        lead_text = ""
+        if RecordingUrl and RecordingDuration and float(RecordingDuration) > 0.4:
+            call_logs.log_event(phone, "recording_received",
+                                 f"Recording duration={RecordingDuration}s url={RecordingUrl}")
+            try:
+                t0 = time.time()
+                stt_result = download_and_transcribe_recording(RecordingUrl)
+                lead_text = stt_result["text"].strip()
+                call_logs.log_event(
+                    phone, "stt_result",
+                    f"\"{lead_text}\" (transcribed in {round(time.time() - t0, 2)}s)"
+                    if lead_text else "STT returned empty text",
+                    level="info" if lead_text else "warn",
+                )
+            except Exception as e:
+                call_logs.log_event(phone, "stt_error", f"{type(e).__name__}: {e}", level="error")
+                lead_text = ""
+        else:
+            call_logs.log_event(phone, "recording_empty",
+                                 f"No usable recording (duration={RecordingDuration or '0'})", level="warn")
+
         if not lead_text:
-            call_logs.log_event(phone, "stt_empty", "No SpeechResult from Twilio", level="warn")
             repeat_text = "দুঃখিত, ঠিক শুনতে পাইনি। আবার একটু বলবেন কি?"
             tts_result = synthesize_speech(repeat_text)
             audio_filename = os.path.basename(tts_result["file_path"])
-            twiml = call_service.build_gather_response(audio_filename, "/twiml/turn", phone)
+            twiml = call_service.build_record_response(audio_filename, "/twiml/turn", phone)
             return Response(content=twiml, media_type="application/xml")
 
-        call_logs.log_event(phone, "stt_result", lead_text)
         t0 = time.time()
         raw_reply, clean_reply, status, llm_time = get_agent_reply(
             session["history"] + [{"role": "user", "content": lead_text}]
@@ -268,7 +289,7 @@ def twiml_turn(phone: str, SpeechResult: str = Form(default=""), empty: str = "0
             call_logs.end_call(phone, status)
             twiml = call_service.build_final_response(audio_filename)
         else:
-            twiml = call_service.build_gather_response(audio_filename, "/twiml/turn", phone)
+            twiml = call_service.build_record_response(audio_filename, "/twiml/turn", phone)
 
         call_logs.log_event(phone, "twiml_sent", f"Sent turn TwiML (call_ended={call_ended})")
         return Response(content=twiml, media_type="application/xml")
@@ -285,6 +306,23 @@ def twilio_status(phone: str, CallStatus: str = Form(default=""), CallDuration: 
     """Twilio hits this on initiated/ringing/answered/completed — tells you the REAL reason a call ended."""
     call_logs.set_twilio_status(phone, CallStatus, duration=CallDuration or None,
                                  extra={"call_sid": CallSid})
+
+    # Safety net: if Twilio says the call ended but our app never closed the
+    # session (e.g. lead hung up mid-conversation), save whatever transcript exists.
+    if CallStatus == "completed":
+        try:
+            session = call_manager.get_session(phone)
+            session_data = call_manager.end_session(phone)
+            if session_data["transcript_lines"]:
+                transcript_path = csv_service.save_transcript(phone, session_data["transcript_lines"])
+                csv_service.update_lead_status(phone, "call_dropped", transcript_path,
+                                                note="Call ended unexpectedly (no final status reached)")
+                call_logs.end_call(phone, "call_dropped")
+                call_logs.log_event(phone, "safety_net_save",
+                                     "Call completed without app-level end; transcript saved anyway")
+        except KeyError:
+            pass  # session already closed normally, nothing to do
+
     return Response(content="", media_type="text/plain")
 
 
