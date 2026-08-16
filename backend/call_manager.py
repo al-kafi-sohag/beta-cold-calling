@@ -42,10 +42,10 @@ def append_opening(phone: str, agent_clean: str):
 
 
 def is_call_over(phone: str, status: str) -> bool:
-    """Call only ends when the lead clearly says yes/no.
+    """Call ends when the lead clearly says yes/no, or asks for a callback.
     MAX_TURNS=0 (default) disables the turn-count cutoff entirely."""
     session = get_session(phone)
-    if status in ("interested", "not_interested"):
+    if status in ("interested", "not_interested", "callback_requested"):
         return True
     if MAX_TURNS and session["turn_count"] >= MAX_TURNS:
         return True
