@@ -1,0 +1,14 @@
+services:
+  cold-call-app:
+    build: .
+    image: beta-cold-calling
+    container_name: cold-call-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./leads.csv:/app/leads.csv
+      - ./transcripts:/app/transcripts
+      - ./tmp_audio:/app/tmp_audio
