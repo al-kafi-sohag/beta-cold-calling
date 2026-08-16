@@ -7,7 +7,10 @@ AUDIO_TMP_DIR = os.environ.get("AUDIO_TMP_DIR", "tmp_audio")
 STT_LANGUAGE = "bn-BD"
 TTS_LANGUAGE = "bn"
 LLM_MODEL = "llama-3.3-70b-versatile"
-MAX_TURNS = 8
+
+# 0 (or unset) = infinite turns, no auto-cutoff by turn count.
+# Set MAX_TURNS=8 (or any number) as an env var if you want a cap back.
+MAX_TURNS = int(os.environ.get("MAX_TURNS", "0"))
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")
 TWILIO_AUTH_TOKEN = os.environ.get("TWILIO_AUTH_TOKEN", "")

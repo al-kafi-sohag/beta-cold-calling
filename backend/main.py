@@ -37,6 +37,7 @@ app.add_middleware(
 csv_service.ensure_leads_csv()
 
 FALLBACK_MESSAGE = "দুঃখিত, একটি প্রযুক্তিগত সমস্যা হয়েছে। আমরা পরে আবার যোগাযোগ করব। ধন্যবাদ।"
+VALID_STT_MODES = ("record", "gather")
 
 
 def _error_twiml(phone: str, reason: str) -> str:
@@ -49,6 +50,14 @@ def _error_twiml(phone: str, reason: str) -> str:
         logger.exception("Even fallback TTS failed for %s", phone)
         call_logs.log_event(phone, "fallback_tts_failed", f"{type(e).__name__}: {e}", level="error")
         return call_service.build_say_fallback(FALLBACK_MESSAGE)
+
+
+def _build_turn_twiml(stt_mode: str, audio_filename: str, action_path: str, phone: str) -> str:
+    """Picks Record (download+transcribe) or Gather (Twilio built-in) based on the
+    mode chosen for this call from the dashboard."""
+    if stt_mode == "gather":
+        return call_service.build_gather_response(audio_filename, action_path, phone)
+    return call_service.build_record_response(audio_filename, action_path, phone)
 
 
 @app.get("/api/leads", response_model=list[LeadOut])
@@ -175,12 +184,15 @@ app.mount("/audio", StaticFiles(directory=AUDIO_TMP_DIR), name="audio")
 # ---------- Real Twilio phone calls ----------
 
 @app.post("/api/call/dial")
-def dial_call(phone: str = Form(...), name: str = Form(...), course_key: str = Form(...)):
+def dial_call(phone: str = Form(...), name: str = Form(...), course_key: str = Form(...),
+              stt_mode: str = Form(default="record")):
     if course_key not in COURSES:
         raise HTTPException(400, f"Unknown course_key: {course_key}")
+    if stt_mode not in VALID_STT_MODES:
+        raise HTTPException(400, f"Unknown stt_mode: {stt_mode} (must be one of {VALID_STT_MODES})")
 
-    logger.info("DIAL — %s (%s) course=%s", name, phone, course_key)
-    call_logs.new_call(phone, phone, name, course_key, direction="twilio_outbound")
+    logger.info("DIAL — %s (%s) course=%s stt_mode=%s", name, phone, course_key, stt_mode)
+    call_logs.new_call(phone, phone, name, course_key, direction="twilio_outbound", stt_mode=stt_mode)
     call_manager.start_session(phone, name, course_key)
 
     try:
@@ -190,7 +202,7 @@ def dial_call(phone: str = Form(...), name: str = Form(...), course_key: str = F
         call_logs.log_event(phone, "dial_error", f"{type(e).__name__}: {e}", level="error")
         raise HTTPException(500, f"Failed to place call: {e}")
 
-    return {"phone": phone, "call_sid": call_sid, "status": "dialing"}
+    return {"phone": phone, "call_sid": call_sid, "status": "dialing", "stt_mode": stt_mode}
 
 
 @app.post("/twiml/opening")
@@ -200,6 +212,8 @@ def twiml_opening(phone: str):
         session = call_manager.get_session(phone)
     except KeyError:
         return Response(content=_error_twiml(phone, "no active session"), media_type="application/xml")
+
+    stt_mode = call_logs.get_stt_mode(phone)
 
     try:
         opener_prompt = session["history"] + [{"role": "user", "content": "কল শুরু কর।"}]
@@ -216,8 +230,8 @@ def twiml_opening(phone: str):
         call_logs.log_event(phone, "tts_done", f"TTS generated in {round(time.time() - t1, 2)}s")
         audio_filename = os.path.basename(tts_result["file_path"])
 
-        twiml = call_service.build_record_response(audio_filename, "/twiml/turn", phone)
-        call_logs.log_event(phone, "twiml_sent", "Sent opening Record TwiML")
+        twiml = _build_turn_twiml(stt_mode, audio_filename, "/twiml/turn", phone)
+        call_logs.log_event(phone, "twiml_sent", f"Sent opening TwiML (mode={stt_mode})")
         return Response(content=twiml, media_type="application/xml")
     except Exception as e:
         logger.exception("Error in /twiml/opening for %s", phone)
@@ -229,8 +243,11 @@ def twiml_opening(phone: str):
 @app.post("/twiml/turn")
 def twiml_turn(
     phone: str,
+    # Populated when stt_mode == "record" (our Record + download/transcribe flow)
     RecordingUrl: str = Form(default=""),
     RecordingDuration: str = Form(default=""),
+    # Populated when stt_mode == "gather" (Twilio's own built-in speech recognition)
+    SpeechResult: str = Form(default=""),
     empty: str = "0",
 ):
     call_logs.log_event(phone, "webhook_hit", f"Twilio hit /twiml/turn (empty={empty})")
@@ -239,33 +256,43 @@ def twiml_turn(
     except KeyError:
         return Response(content=_error_twiml(phone, "no active session"), media_type="application/xml")
 
+    stt_mode = call_logs.get_stt_mode(phone)
+
     try:
         lead_text = ""
-        if RecordingUrl and RecordingDuration and float(RecordingDuration) > 0.4:
-            call_logs.log_event(phone, "recording_received",
-                                 f"Recording duration={RecordingDuration}s url={RecordingUrl}")
-            try:
-                t0 = time.time()
-                stt_result = download_and_transcribe_recording(RecordingUrl)
-                lead_text = stt_result["text"].strip()
-                call_logs.log_event(
-                    phone, "stt_result",
-                    f"\"{lead_text}\" (transcribed in {round(time.time() - t0, 2)}s)"
-                    if lead_text else "STT returned empty text",
-                    level="info" if lead_text else "warn",
-                )
-            except Exception as e:
-                call_logs.log_event(phone, "stt_error", f"{type(e).__name__}: {e}", level="error")
-                lead_text = ""
+
+        if stt_mode == "gather":
+            lead_text = SpeechResult.strip()
+            if lead_text:
+                call_logs.log_event(phone, "stt_result", f"\"{lead_text}\" (Twilio Gather, direct)")
+            else:
+                call_logs.log_event(phone, "stt_empty", "No SpeechResult from Twilio Gather", level="warn")
         else:
-            call_logs.log_event(phone, "recording_empty",
-                                 f"No usable recording (duration={RecordingDuration or '0'})", level="warn")
+            if RecordingUrl and RecordingDuration and float(RecordingDuration) > 0.4:
+                call_logs.log_event(phone, "recording_received",
+                                     f"Recording duration={RecordingDuration}s url={RecordingUrl}")
+                try:
+                    t0 = time.time()
+                    stt_result = download_and_transcribe_recording(RecordingUrl)
+                    lead_text = stt_result["text"].strip()
+                    call_logs.log_event(
+                        phone, "stt_result",
+                        f"\"{lead_text}\" (transcribed in {round(time.time() - t0, 2)}s)"
+                        if lead_text else "STT returned empty text",
+                        level="info" if lead_text else "warn",
+                    )
+                except Exception as e:
+                    call_logs.log_event(phone, "stt_error", f"{type(e).__name__}: {e}", level="error")
+                    lead_text = ""
+            else:
+                call_logs.log_event(phone, "recording_empty",
+                                     f"No usable recording (duration={RecordingDuration or '0'})", level="warn")
 
         if not lead_text:
             repeat_text = "দুঃখিত, ঠিক শুনতে পাইনি। আবার একটু বলবেন কি?"
             tts_result = synthesize_speech(repeat_text)
             audio_filename = os.path.basename(tts_result["file_path"])
-            twiml = call_service.build_record_response(audio_filename, "/twiml/turn", phone)
+            twiml = _build_turn_twiml(stt_mode, audio_filename, "/twiml/turn", phone)
             return Response(content=twiml, media_type="application/xml")
 
         t0 = time.time()
@@ -289,7 +316,7 @@ def twiml_turn(
             call_logs.end_call(phone, status)
             twiml = call_service.build_final_response(audio_filename)
         else:
-            twiml = call_service.build_record_response(audio_filename, "/twiml/turn", phone)
+            twiml = _build_turn_twiml(stt_mode, audio_filename, "/twiml/turn", phone)
 
         call_logs.log_event(phone, "twiml_sent", f"Sent turn TwiML (call_ended={call_ended})")
         return Response(content=twiml, media_type="application/xml")

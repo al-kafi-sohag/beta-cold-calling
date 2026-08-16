@@ -17,6 +17,15 @@
 
     <!-- LEFT: Leads + Add lead + Dial -->
     <div class="lg:col-span-1 space-y-6">
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <h2 class="font-semibold mb-3">STT Mode <span class="text-slate-500 font-normal">(applies to all dials below)</span></h2>
+        <select id="sttMode" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm">
+          <option value="record">🎧 Download &amp; Transcribe (our STT — more accurate)</option>
+          <option value="gather">⚡ Direct (Twilio built-in — faster, less accurate)</option>
+        </select>
+      </div>
+
       <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
         <h2 class="font-semibold mb-3">Leads</h2>
         <div id="leadsTable" class="space-y-2 max-h-64 overflow-y-auto"></div>
@@ -72,6 +81,7 @@ let selectedCallId = null;
 let courses = {};
 
 const levelColor = { info: "text-slate-300", warn: "text-amber-400", error: "text-red-400" };
+const modeLabel = { record: "🎧 Download & Transcribe", gather: "⚡ Direct (Twilio)" };
 
 async function loadCourses() {
   const res = await axios.get(`${API}/api/courses`);
@@ -97,14 +107,16 @@ async function loadLeads() {
 }
 
 async function dialLead(phone, name, course_key) {
+  const stt_mode = document.getElementById("sttMode").value;
   const form = new FormData();
   form.append("phone", phone);
   form.append("name", name);
   form.append("course_key", course_key);
+  form.append("stt_mode", stt_mode);
   try {
     const res = await axios.post(`${API}/api/call/dial`, form);
     selectedCallId = phone;
-    alert(`Dialing ${name} (${phone}) — SID: ${res.data.call_sid}`);
+    alert(`Dialing ${name} (${phone}) — mode: ${modeLabel[stt_mode]} — SID: ${res.data.call_sid}`);
     refreshCalls();
   } catch (e) {
     alert(`Dial failed: ${e.response?.data?.detail || e.message}`);
@@ -140,7 +152,7 @@ async function refreshCalls() {
       onclick="selectCall('${c.call_id}')">
       <div class="font-medium">${c.name || c.phone} <span class="text-slate-500">${c.phone}</span></div>
       <div class="text-slate-500">
-        twilio: ${c.twilio_status || '-'} | final: ${c.final_status || 'in progress'} | events: ${c.events.length}
+        mode: ${modeLabel[c.stt_mode] || c.stt_mode || '-'} | twilio: ${c.twilio_status || '-'} | final: ${c.final_status || 'in progress'} | events: ${c.events.length}
       </div>
     </div>
   `).join("") || `<p class="text-slate-600 text-xs">No calls yet</p>`;
@@ -158,7 +170,7 @@ async function loadCallDetail(callId) {
     const res = await axios.get(`${API}/api/monitor/calls/${encodeURIComponent(callId)}`);
     const d = res.data;
     document.getElementById("callMeta").innerHTML =
-      `${d.name} (${d.phone}) — course=${d.course_key}<br/>
+      `${d.name} (${d.phone}) — course=${d.course_key} — mode=${modeLabel[d.stt_mode] || d.stt_mode}<br/>
        twilio_sid=${d.twilio_sid || '-'} | twilio_status=${d.twilio_status || '-'} | duration=${d.call_duration_sec || '-'}s<br/>
        final_status=${d.final_status || 'in progress'}`;
 
