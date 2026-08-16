@@ -1,4 +1,5 @@
 import logging
+from urllib.parse import quote
 from twilio.rest import Client
 from twilio.twiml.voice_response import VoiceResponse, Gather
 
@@ -37,18 +38,25 @@ def twiml_url(path: str) -> str:
     return f"{PUBLIC_BASE_URL}{path}"
 
 
+def _enc(phone: str) -> str:
+    """Percent-encode phone numbers before embedding in a query string.
+    A raw '+' in a query string decodes as a space, breaking session lookups."""
+    return quote(phone, safe="")
+
+
 def place_call(to_number: str, phone_id: str) -> str:
     """Dial the lead. phone_id is used to build the webhook URL Twilio calls first."""
     client = get_twilio_client()
     if not TWILIO_FROM_NUMBER:
         raise RuntimeError("TWILIO_FROM_NUMBER not set")
 
+    encoded_phone = _enc(phone_id)
     call = client.calls.create(
         to=to_number,
         from_=TWILIO_FROM_NUMBER,
-        url=twiml_url(f"/twiml/opening?phone={phone_id}"),
+        url=twiml_url(f"/twiml/opening?phone={encoded_phone}"),
         method="POST",
-        status_callback=twiml_url(f"/twilio/status?phone={phone_id}"),
+        status_callback=twiml_url(f"/twilio/status?phone={encoded_phone}"),
         status_callback_event=["initiated", "ringing", "answered", "completed"],
         status_callback_method="POST",
     )
@@ -58,17 +66,18 @@ def place_call(to_number: str, phone_id: str) -> str:
 
 
 def build_gather_response(audio_filename: str, action_path: str, phone_id: str) -> str:
+    encoded_phone = _enc(phone_id)
     vr = VoiceResponse()
     vr.play(audio_url(audio_filename))
     gather = Gather(
         input="speech",
-        action=twiml_url(f"{action_path}?phone={phone_id}"),
+        action=twiml_url(f"{action_path}?phone={encoded_phone}"),
         method="POST",
         language=TWILIO_GATHER_LANGUAGE,
         speech_timeout="auto",
     )
     vr.append(gather)
-    vr.redirect(twiml_url(f"{action_path}?phone={phone_id}&empty=1"), method="POST")
+    vr.redirect(twiml_url(f"{action_path}?phone={encoded_phone}&empty=1"), method="POST")
     return str(vr)
 
 
@@ -80,7 +89,6 @@ def build_final_response(audio_filename: str) -> str:
 
 
 def build_say_fallback(message: str, language: str = "bn-IN") -> str:
-    """Ultimate fallback that doesn't depend on our TTS/network at all — uses Twilio's own voice."""
     vr = VoiceResponse()
     vr.say(message, language=language)
     vr.hangup()
