@@ -26,3 +26,33 @@ class LeadOut(BaseModel):
     status: str
     notes: Optional[str] = ""
     transcript_file: Optional[str] = ""
+
+
+# ---- Knowledge base schemas ----
+
+class InstituteUpdate(BaseModel):
+    name: Optional[str] = None
+    address: Optional[str] = None
+    phone: Optional[str] = None
+    hours: Optional[str] = None
+    facilities: Optional[list[str]] = None
+    extra_info: Optional[list[str]] = None
+
+
+class CallingReasonUpdate(BaseModel):
+    text: str
+
+
+class TermsUpdate(BaseModel):
+    terms: list[str]
+
+
+class CourseCreate(BaseModel):
+    key: str
+    name: str
+    price: str
+
+
+class CourseUpdate(BaseModel):
+    name: Optional[str] = None
+    price: Optional[str] = None

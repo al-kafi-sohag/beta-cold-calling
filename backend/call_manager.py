@@ -1,5 +1,5 @@
 import logging
-from backend.knowledge_base import build_system_prompt, COURSES
+from backend.knowledge_base import build_system_prompt
 from backend.config import MAX_TURNS
 
 logger = logging.getLogger("call_agent.session")

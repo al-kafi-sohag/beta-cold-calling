@@ -44,8 +44,11 @@ def save_transcript(phone: str, lines: list[str]) -> str:
         f.write("\n".join(lines))
     return path
 
+
 def add_lead(phone: str, name: str, course_key: str):
     df = read_leads()
+    if (df["phone"] == phone).any():
+        raise ValueError(f"Lead with phone {phone} already exists")
     new_row = {
         "phone": phone,
         "name": name,
@@ -57,3 +60,24 @@ def add_lead(phone: str, name: str, course_key: str):
     df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
     df.to_csv(LEADS_CSV_PATH, index=False)
     return new_row
+
+
+def delete_lead(phone: str):
+    df = read_leads()
+    mask = df["phone"] == phone
+    if not mask.any():
+        raise ValueError(f"Lead with phone {phone} not found")
+    df = df[~mask]
+    df.to_csv(LEADS_CSV_PATH, index=False)
+
+
+def reset_lead(phone: str):
+    """Reset a lead back to not_called so it can be dialed again."""
+    df = read_leads()
+    mask = df["phone"] == phone
+    if not mask.any():
+        raise ValueError(f"Lead with phone {phone} not found")
+    df.loc[mask, "status"] = "not_called"
+    df.loc[mask, "notes"] = ""
+    df.loc[mask, "transcript_file"] = ""
+    df.to_csv(LEADS_CSV_PATH, index=False)

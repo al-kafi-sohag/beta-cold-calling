@@ -10,8 +10,18 @@
 </style>
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
+
+<nav class="border-b border-slate-800 bg-slate-900/60">
+  <div class="max-w-7xl mx-auto px-6 py-3 flex items-center gap-6">
+    <span class="font-semibold">📞 Cold-Call Agent</span>
+    <a href="/" class="text-sm text-slate-400 hover:text-slate-200">Demo Call</a>
+    <a href="/dashboard" class="text-sm text-emerald-400 font-medium">Dashboard</a>
+    <a href="/kb" class="text-sm text-slate-400 hover:text-slate-200">Knowledge Base</a>
+  </div>
+</nav>
+
 <div class="max-w-7xl mx-auto p-6">
-  <h1 class="text-2xl font-semibold mb-4">📞 Call Monitor Dashboard</h1>
+  <h1 class="text-2xl font-semibold mb-4">Call Monitor Dashboard</h1>
 
   <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
@@ -27,8 +37,11 @@
       </div>
 
       <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
-        <h2 class="font-semibold mb-3">Leads</h2>
-        <div id="leadsTable" class="space-y-2 max-h-64 overflow-y-auto"></div>
+        <div class="flex items-center justify-between mb-3">
+          <h2 class="font-semibold">Leads</h2>
+          <span id="leadsCount" class="text-xs text-slate-500"></span>
+        </div>
+        <div id="leadsTable" class="space-y-2 max-h-72 overflow-y-auto"></div>
       </div>
 
       <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
@@ -63,9 +76,12 @@
 
     <!-- RIGHT: Call detail / timeline -->
     <div class="lg:col-span-1 bg-black border border-slate-800 rounded-2xl p-4">
-      <h2 class="font-semibold mb-2">Call timeline</h2>
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-semibold">Call timeline</h2>
+        <button id="deleteCallBtn" class="hidden text-xs bg-red-900/50 hover:bg-red-800 text-red-300 rounded px-2 py-1">Delete log</button>
+      </div>
       <div id="callMeta" class="text-xs text-slate-400 mb-3"></div>
-      <div id="callEvents" class="space-y-1 max-h-[55vh] overflow-y-auto"></div>
+      <div id="callEvents" class="space-y-1 max-h-[50vh] overflow-y-auto"></div>
       <div class="mt-4">
         <h3 class="font-semibold text-sm mb-1">Transcript</h3>
         <pre id="transcriptBox" class="text-xs text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto"></pre>
@@ -92,18 +108,36 @@ async function loadCourses() {
 }
 
 async function loadLeads() {
-  const res = await axios.get(`${API}/api/leads`);
-  const box = document.getElementById("leadsTable");
-  box.innerHTML = res.data.map(l => `
-    <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2 text-xs">
-      <div>
-        <div class="font-medium">${l.name} <span class="text-slate-500">${l.phone}</span></div>
-        <div class="text-slate-500">${l.course_key} — ${l.status}</div>
+  try {
+    const res = await axios.get(`${API}/api/leads`);
+    document.getElementById("leadsCount").textContent = `${res.data.length} total`;
+    const box = document.getElementById("leadsTable");
+    box.innerHTML = res.data.map(l => `
+      <div class="bg-slate-800 rounded-lg px-3 py-2 text-xs">
+        <div class="flex items-center justify-between">
+          <div>
+            <div class="font-medium">${l.name} <span class="text-slate-500">${l.phone}</span></div>
+            <div class="text-slate-500">${l.course_key} — ${l.status}</div>
+          </div>
+          <div class="flex gap-1">
+            <button class="bg-emerald-600 hover:bg-emerald-500 rounded px-2 py-1 text-xs"
+              onclick="dialLead('${l.phone}','${l.name.replace(/'/g, "\\'")}','${l.course_key}')">Call</button>
+            <button class="bg-red-900/60 hover:bg-red-800 text-red-300 rounded px-2 py-1 text-xs"
+              onclick="deleteLead('${l.phone}')">✕</button>
+          </div>
+        </div>
       </div>
-      <button class="bg-emerald-600 hover:bg-emerald-500 rounded px-2 py-1 text-xs"
-        onclick="dialLead('${l.phone}','${l.name.replace(/'/g, "\\'")}','${l.course_key}')">Call</button>
-    </div>
-  `).join("");
+    `).join("") || `<p class="text-slate-600 text-xs">No leads yet — add one below.</p>`;
+  } catch (e) {
+    document.getElementById("leadsTable").innerHTML =
+      `<p class="text-red-400 text-xs">Failed to load leads: ${e.message}. Is the backend running?</p>`;
+  }
+}
+
+async function deleteLead(phone) {
+  if (!confirm(`Delete lead ${phone}? This cannot be undone.`)) return;
+  await axios.delete(`${API}/api/leads/${encodeURIComponent(phone)}`);
+  loadLeads();
 }
 
 async function dialLead(phone, name, course_key) {
@@ -130,10 +164,14 @@ document.getElementById("addLeadBtn").addEventListener("click", async () => {
   if (!phone || !name) return alert("Phone and name required");
   const form = new FormData();
   form.append("phone", phone); form.append("name", name); form.append("course_key", course_key);
-  await axios.post(`${API}/api/leads`, form);
-  document.getElementById("newPhone").value = "";
-  document.getElementById("newName").value = "";
-  loadLeads();
+  try {
+    await axios.post(`${API}/api/leads`, form);
+    document.getElementById("newPhone").value = "";
+    document.getElementById("newName").value = "";
+    loadLeads();
+  } catch (e) {
+    alert(`Failed to add lead: ${e.response?.data?.detail || e.message}`);
+  }
 });
 
 document.getElementById("customCallBtn").addEventListener("click", () => {
@@ -169,6 +207,7 @@ async function loadCallDetail(callId) {
   try {
     const res = await axios.get(`${API}/api/monitor/calls/${encodeURIComponent(callId)}`);
     const d = res.data;
+    document.getElementById("deleteCallBtn").classList.remove("hidden");
     document.getElementById("callMeta").innerHTML =
       `${d.name} (${d.phone}) — course=${d.course_key} — mode=${modeLabel[d.stt_mode] || d.stt_mode}<br/>
        twilio_sid=${d.twilio_sid || '-'} | twilio_status=${d.twilio_status || '-'} | duration=${d.call_duration_sec || '-'}s<br/>
@@ -192,6 +231,18 @@ async function loadCallDetail(callId) {
     // call may not exist yet right after dialing
   }
 }
+
+document.getElementById("deleteCallBtn").addEventListener("click", async () => {
+  if (!selectedCallId) return;
+  if (!confirm(`Delete call log for ${selectedCallId}? This only clears the monitor log, not the lead.`)) return;
+  await axios.delete(`${API}/api/monitor/calls/${encodeURIComponent(selectedCallId)}`);
+  selectedCallId = null;
+  document.getElementById("deleteCallBtn").classList.add("hidden");
+  document.getElementById("callMeta").innerHTML = "";
+  document.getElementById("callEvents").innerHTML = "";
+  document.getElementById("transcriptBox").textContent = "";
+  refreshCalls();
+});
 
 loadCourses().then(loadLeads);
 refreshCalls();

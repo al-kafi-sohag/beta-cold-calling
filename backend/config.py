@@ -2,6 +2,7 @@ import os
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "your_free_groq_key_here")
 LEADS_CSV_PATH = os.environ.get("LEADS_CSV_PATH", "leads.csv")
+KB_DATA_PATH = os.environ.get("KB_DATA_PATH", "kb_data.json")
 TRANSCRIPTS_DIR = os.environ.get("TRANSCRIPTS_DIR", "transcripts")
 AUDIO_TMP_DIR = os.environ.get("AUDIO_TMP_DIR", "tmp_audio")
 STT_LANGUAGE = "bn-BD"
@@ -9,7 +10,6 @@ TTS_LANGUAGE = "bn"
 LLM_MODEL = "llama-3.3-70b-versatile"
 
 # 0 (or unset) = infinite turns, no auto-cutoff by turn count.
-# Set MAX_TURNS=8 (or any number) as an env var if you want a cap back.
 MAX_TURNS = int(os.environ.get("MAX_TURNS", "0"))
 
 TWILIO_ACCOUNT_SID = os.environ.get("TWILIO_ACCOUNT_SID", "")

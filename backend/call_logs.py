@@ -94,3 +94,13 @@ def get_call(call_id: str):
 def list_calls():
     with _lock:
         return sorted(_calls.values(), key=lambda c: c["started_at"], reverse=True)
+
+
+def delete_call(call_id: str):
+    with _lock:
+        _calls.pop(call_id, None)
+
+
+def clear_all():
+    with _lock:
+        _calls.clear()

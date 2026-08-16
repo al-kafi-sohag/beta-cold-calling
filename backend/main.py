@@ -11,8 +11,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response, FileResponse
 
 from backend.config import AUDIO_TMP_DIR
-from backend.knowledge_base import COURSES
-from backend.schemas import StartCallResponse, TurnResponse, LeadOut
+from backend import knowledge_base as kb
+from backend.schemas import (
+    StartCallResponse, TurnResponse, LeadOut,
+    InstituteUpdate, CallingReasonUpdate, TermsUpdate, CourseCreate, CourseUpdate,
+)
 from backend import csv_service, call_manager, call_logs, call_service
 from backend.llm_service import get_agent_reply
 from backend.tts_service import synthesize_speech
@@ -41,7 +44,6 @@ VALID_STT_MODES = ("record", "gather")
 
 
 def _error_twiml(phone: str, reason: str) -> str:
-    """Always returns valid TwiML, even if our own TTS/network is down."""
     call_logs.log_event(phone, "fallback_twiml", f"Returning fallback TwiML: {reason}", level="error")
     try:
         tts_result = synthesize_speech(FALLBACK_MESSAGE)
@@ -53,12 +55,12 @@ def _error_twiml(phone: str, reason: str) -> str:
 
 
 def _build_turn_twiml(stt_mode: str, audio_filename: str, action_path: str, phone: str) -> str:
-    """Picks Record (download+transcribe) or Gather (Twilio built-in) based on the
-    mode chosen for this call from the dashboard."""
     if stt_mode == "gather":
         return call_service.build_gather_response(audio_filename, action_path, phone)
     return call_service.build_record_response(audio_filename, action_path, phone)
 
+
+# ---------------- Leads CRUD ----------------
 
 @app.get("/api/leads", response_model=list[LeadOut])
 def list_leads():
@@ -68,23 +70,93 @@ def list_leads():
 
 @app.post("/api/leads")
 def create_lead(phone: str = Form(...), name: str = Form(...), course_key: str = Form(...)):
-    if course_key not in COURSES:
+    if course_key not in kb.get_courses():
         raise HTTPException(400, f"Unknown course_key: {course_key}")
-    lead = csv_service.add_lead(phone, name, course_key)
+    try:
+        lead = csv_service.add_lead(phone, name, course_key)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
     logger.info("Added new lead: %s (%s)", name, phone)
     return lead
 
 
+@app.delete("/api/leads/{phone}")
+def delete_lead(phone: str):
+    try:
+        csv_service.delete_lead(phone)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    logger.info("Deleted lead: %s", phone)
+    return {"deleted": phone}
+
+
+@app.post("/api/leads/{phone}/reset")
+def reset_lead(phone: str):
+    try:
+        csv_service.reset_lead(phone)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"reset": phone}
+
+
 @app.get("/api/courses")
 def list_courses():
-    return COURSES
+    return kb.get_courses()
+
+
+# ---------------- Knowledge base CRUD ----------------
+
+@app.get("/api/kb")
+def get_kb():
+    return kb.get_kb()
+
+
+@app.put("/api/kb/institute")
+def update_kb_institute(payload: InstituteUpdate):
+    data = {k: v for k, v in payload.dict().items() if v is not None}
+    return kb.update_institute(data)
+
+
+@app.put("/api/kb/calling_reason")
+def update_kb_calling_reason(payload: CallingReasonUpdate):
+    return {"calling_reason": kb.update_calling_reason(payload.text)}
+
+
+@app.put("/api/kb/terms")
+def update_kb_terms(payload: TermsUpdate):
+    return {"terms": kb.update_terms(payload.terms)}
+
+
+@app.post("/api/kb/courses")
+def create_kb_course(payload: CourseCreate):
+    try:
+        return kb.add_course(payload.key, payload.name, payload.price)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@app.put("/api/kb/courses/{key}")
+def edit_kb_course(key: str, payload: CourseUpdate):
+    try:
+        return kb.update_course(key, payload.name, payload.price)
+    except KeyError:
+        raise HTTPException(404, "Course not found")
+
+
+@app.delete("/api/kb/courses/{key}")
+def remove_kb_course(key: str):
+    try:
+        kb.delete_course(key)
+    except KeyError:
+        raise HTTPException(404, "Course not found")
+    return {"deleted": key}
 
 
 # ---------- Web-test endpoints (browser mic, no Twilio) ----------
 
 @app.post("/api/call/start", response_model=StartCallResponse)
 def start_call(phone: str = Form(...), name: str = Form(...), course_key: str = Form(...)):
-    if course_key not in COURSES:
+    if course_key not in kb.get_courses():
         raise HTTPException(400, f"Unknown course_key: {course_key}")
 
     logger.info("CALL START (web) — %s (%s) course=%s", name, phone, course_key)
@@ -186,7 +258,7 @@ app.mount("/audio", StaticFiles(directory=AUDIO_TMP_DIR), name="audio")
 @app.post("/api/call/dial")
 def dial_call(phone: str = Form(...), name: str = Form(...), course_key: str = Form(...),
               stt_mode: str = Form(default="record")):
-    if course_key not in COURSES:
+    if course_key not in kb.get_courses():
         raise HTTPException(400, f"Unknown course_key: {course_key}")
     if stt_mode not in VALID_STT_MODES:
         raise HTTPException(400, f"Unknown stt_mode: {stt_mode} (must be one of {VALID_STT_MODES})")
@@ -243,10 +315,8 @@ def twiml_opening(phone: str):
 @app.post("/twiml/turn")
 def twiml_turn(
     phone: str,
-    # Populated when stt_mode == "record" (our Record + download/transcribe flow)
     RecordingUrl: str = Form(default=""),
     RecordingDuration: str = Form(default=""),
-    # Populated when stt_mode == "gather" (Twilio's own built-in speech recognition)
     SpeechResult: str = Form(default=""),
     empty: str = "0",
 ):
@@ -330,12 +400,9 @@ def twiml_turn(
 @app.post("/twilio/status")
 def twilio_status(phone: str, CallStatus: str = Form(default=""), CallDuration: str = Form(default=""),
                    CallSid: str = Form(default="")):
-    """Twilio hits this on initiated/ringing/answered/completed — tells you the REAL reason a call ended."""
     call_logs.set_twilio_status(phone, CallStatus, duration=CallDuration or None,
                                  extra={"call_sid": CallSid})
 
-    # Safety net: if Twilio says the call ended but our app never closed the
-    # session (e.g. lead hung up mid-conversation), save whatever transcript exists.
     if CallStatus == "completed":
         try:
             session = call_manager.get_session(phone)
@@ -348,7 +415,7 @@ def twilio_status(phone: str, CallStatus: str = Form(default=""), CallDuration: 
                 call_logs.log_event(phone, "safety_net_save",
                                      "Call completed without app-level end; transcript saved anyway")
         except KeyError:
-            pass  # session already closed normally, nothing to do
+            pass
 
     return Response(content="", media_type="text/plain")
 
@@ -368,9 +435,20 @@ def monitor_call_detail(call_id: str):
     return record
 
 
+@app.delete("/api/monitor/calls/{call_id}")
+def monitor_delete_call(call_id: str):
+    call_logs.delete_call(call_id)
+    return {"deleted": call_id}
+
+
 @app.get("/dashboard")
 def dashboard():
     return FileResponse("frontend/dashboard.html")
+
+
+@app.get("/kb")
+def kb_page():
+    return FileResponse("frontend/kb.html")
 
 
 app.mount("/", StaticFiles(directory="frontend", html=True), name="frontend")
