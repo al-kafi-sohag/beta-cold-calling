@@ -13,6 +13,7 @@ def _get_or_create(call_id: str) -> dict:
             "name": "",
             "course_key": "",
             "direction": "unknown",
+            "stt_mode": "record",
             "twilio_sid": None,
             "twilio_status": None,
             "call_duration_sec": None,
@@ -24,7 +25,8 @@ def _get_or_create(call_id: str) -> dict:
     return _calls[call_id]
 
 
-def new_call(call_id: str, phone: str, name: str, course_key: str, direction: str = "outbound"):
+def new_call(call_id: str, phone: str, name: str, course_key: str, direction: str = "outbound",
+             stt_mode: str = "record"):
     with _lock:
         record = _get_or_create(call_id)
         record.update({
@@ -32,12 +34,20 @@ def new_call(call_id: str, phone: str, name: str, course_key: str, direction: st
             "name": name,
             "course_key": course_key,
             "direction": direction,
+            "stt_mode": stt_mode,
             "started_at": time.time(),
             "ended_at": None,
             "final_status": None,
         })
-    log_event(call_id, "call_created", f"Session created for {name} ({phone}), course={course_key}")
+    log_event(call_id, "call_created",
+              f"Session created for {name} ({phone}), course={course_key}, stt_mode={stt_mode}")
     return record
+
+
+def get_stt_mode(call_id: str) -> str:
+    with _lock:
+        record = _calls.get(call_id)
+        return record["stt_mode"] if record else "record"
 
 
 def set_twilio_sid(call_id: str, sid: str):

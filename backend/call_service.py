@@ -1,13 +1,14 @@
 import logging
 from urllib.parse import quote
 from twilio.rest import Client
-from twilio.twiml.voice_response import VoiceResponse, Record
+from twilio.twiml.voice_response import VoiceResponse, Record, Gather
 
 from backend.config import (
     TWILIO_ACCOUNT_SID,
     TWILIO_AUTH_TOKEN,
     TWILIO_FROM_NUMBER,
     PUBLIC_BASE_URL,
+    TWILIO_GATHER_LANGUAGE,
 )
 from backend import call_logs
 
@@ -82,6 +83,26 @@ def build_record_response(audio_filename: str, action_path: str, phone_id: str) 
     )
     vr.append(record)
     # If Record gets zero input at all, Twilio falls through to here
+    vr.redirect(twiml_url(f"{action_path}?phone={encoded_phone}&empty=1"), method="POST")
+    return str(vr)
+
+
+def build_gather_response(audio_filename: str, action_path: str, phone_id: str) -> str:
+    """Play the agent's line, then GATHER the lead's reply using Twilio's own
+    built-in speech recognition — no download/STT round trip, faster, but
+    Bengali accuracy is generally worse than our own STT pipeline."""
+    encoded_phone = _enc(phone_id)
+    vr = VoiceResponse()
+    vr.play(audio_url(audio_filename))
+    gather = Gather(
+        input="speech",
+        action=twiml_url(f"{action_path}?phone={encoded_phone}"),
+        method="POST",
+        language=TWILIO_GATHER_LANGUAGE,
+        speech_timeout="auto",
+    )
+    vr.append(gather)
+    # If Gather gets zero input at all, Twilio falls through to here
     vr.redirect(twiml_url(f"{action_path}?phone={encoded_phone}&empty=1"), method="POST")
     return str(vr)
 
