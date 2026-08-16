@@ -43,3 +43,17 @@ def save_transcript(phone: str, lines: list[str]) -> str:
     with open(path, "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
     return path
+
+def add_lead(phone: str, name: str, course_key: str):
+    df = read_leads()
+    new_row = {
+        "phone": phone,
+        "name": name,
+        "course_key": course_key,
+        "status": "not_called",
+        "notes": "",
+        "transcript_file": "",
+    }
+    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+    df.to_csv(LEADS_CSV_PATH, index=False)
+    return new_row

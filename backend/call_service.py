@@ -9,6 +9,7 @@ from backend.config import (
     PUBLIC_BASE_URL,
     TWILIO_GATHER_LANGUAGE,
 )
+from backend import call_logs
 
 logger = logging.getLogger("call_agent.telephony")
 
@@ -26,13 +27,13 @@ def get_twilio_client() -> Client:
 
 def audio_url(filename: str) -> str:
     if not PUBLIC_BASE_URL:
-        raise RuntimeError("PUBLIC_BASE_URL not set — start ngrok and set it")
+        raise RuntimeError("PUBLIC_BASE_URL not set")
     return f"{PUBLIC_BASE_URL}/audio/{filename}"
 
 
 def twiml_url(path: str) -> str:
     if not PUBLIC_BASE_URL:
-        raise RuntimeError("PUBLIC_BASE_URL not set — start ngrok and set it")
+        raise RuntimeError("PUBLIC_BASE_URL not set")
     return f"{PUBLIC_BASE_URL}{path}"
 
 
@@ -47,13 +48,16 @@ def place_call(to_number: str, phone_id: str) -> str:
         from_=TWILIO_FROM_NUMBER,
         url=twiml_url(f"/twiml/opening?phone={phone_id}"),
         method="POST",
+        status_callback=twiml_url(f"/twilio/status?phone={phone_id}"),
+        status_callback_event=["initiated", "ringing", "answered", "completed"],
+        status_callback_method="POST",
     )
     logger.info("Placed Twilio call sid=%s to=%s", call.sid, to_number)
+    call_logs.set_twilio_sid(phone_id, call.sid)
     return call.sid
 
 
 def build_gather_response(audio_filename: str, action_path: str, phone_id: str) -> str:
-    """Play the agent's line, then listen for the lead's speech."""
     vr = VoiceResponse()
     vr.play(audio_url(audio_filename))
     gather = Gather(
@@ -64,14 +68,20 @@ def build_gather_response(audio_filename: str, action_path: str, phone_id: str) 
         speech_timeout="auto",
     )
     vr.append(gather)
-    # If Gather times out with no input, Twilio falls through to here
     vr.redirect(twiml_url(f"{action_path}?phone={phone_id}&empty=1"), method="POST")
     return str(vr)
 
 
 def build_final_response(audio_filename: str) -> str:
-    """Play the closing line, then hang up."""
     vr = VoiceResponse()
     vr.play(audio_url(audio_filename))
+    vr.hangup()
+    return str(vr)
+
+
+def build_say_fallback(message: str, language: str = "bn-IN") -> str:
+    """Ultimate fallback that doesn't depend on our TTS/network at all — uses Twilio's own voice."""
+    vr = VoiceResponse()
+    vr.say(message, language=language)
     vr.hangup()
     return str(vr)

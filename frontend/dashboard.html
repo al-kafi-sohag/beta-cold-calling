@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Call Monitor Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/axios@1.7.7/dist/axios.min.js"></script>
+<style>
+  .log-line { font-family: ui-monospace, monospace; white-space: pre-wrap; word-break: break-word; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+<div class="max-w-7xl mx-auto p-6">
+  <h1 class="text-2xl font-semibold mb-4">📞 Call Monitor Dashboard</h1>
+
+  <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+
+    <!-- LEFT: Leads + Add lead + Dial -->
+    <div class="lg:col-span-1 space-y-6">
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <h2 class="font-semibold mb-3">Leads</h2>
+        <div id="leadsTable" class="space-y-2 max-h-64 overflow-y-auto"></div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <h2 class="font-semibold mb-3">Add new lead</h2>
+        <div class="space-y-2">
+          <input id="newPhone" placeholder="+8801XXXXXXXXX" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
+          <input id="newName" placeholder="Lead name" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
+          <select id="newCourse" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></select>
+          <button id="addLeadBtn" class="w-full bg-sky-600 hover:bg-sky-500 rounded-lg px-3 py-2 text-sm font-medium">+ Add lead</button>
+        </div>
+      </div>
+
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4">
+        <h2 class="font-semibold mb-3">Custom call (no need to save)</h2>
+        <div class="space-y-2">
+          <input id="customPhone" placeholder="+8801XXXXXXXXX" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
+          <input id="customName" placeholder="Lead name" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
+          <select id="customCourse" class="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm"></select>
+          <button id="customCallBtn" class="w-full bg-emerald-600 hover:bg-emerald-500 rounded-lg px-3 py-2 text-sm font-medium">📞 Call now</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MIDDLE: Calls list -->
+    <div class="lg:col-span-1 bg-slate-900 border border-slate-800 rounded-2xl p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold">Calls</h2>
+        <span class="text-xs text-slate-500">auto-refreshing</span>
+      </div>
+      <div id="callsList" class="space-y-2 max-h-[70vh] overflow-y-auto"></div>
+    </div>
+
+    <!-- RIGHT: Call detail / timeline -->
+    <div class="lg:col-span-1 bg-black border border-slate-800 rounded-2xl p-4">
+      <h2 class="font-semibold mb-2">Call timeline</h2>
+      <div id="callMeta" class="text-xs text-slate-400 mb-3"></div>
+      <div id="callEvents" class="space-y-1 max-h-[55vh] overflow-y-auto"></div>
+      <div class="mt-4">
+        <h3 class="font-semibold text-sm mb-1">Transcript</h3>
+        <pre id="transcriptBox" class="text-xs text-slate-300 whitespace-pre-wrap max-h-40 overflow-y-auto"></pre>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script>
+const API = "";
+let selectedCallId = null;
+let courses = {};
+
+const levelColor = { info: "text-slate-300", warn: "text-amber-400", error: "text-red-400" };
+
+async function loadCourses() {
+  const res = await axios.get(`${API}/api/courses`);
+  courses = res.data;
+  const opts = Object.entries(courses).map(([k, v]) => `<option value="${k}">${v.name}</option>`).join("");
+  document.getElementById("newCourse").innerHTML = opts;
+  document.getElementById("customCourse").innerHTML = opts;
+}
+
+async function loadLeads() {
+  const res = await axios.get(`${API}/api/leads`);
+  const box = document.getElementById("leadsTable");
+  box.innerHTML = res.data.map(l => `
+    <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2 text-xs">
+      <div>
+        <div class="font-medium">${l.name} <span class="text-slate-500">${l.phone}</span></div>
+        <div class="text-slate-500">${l.course_key} — ${l.status}</div>
+      </div>
+      <button class="bg-emerald-600 hover:bg-emerald-500 rounded px-2 py-1 text-xs"
+        onclick="dialLead('${l.phone}','${l.name.replace(/'/g, "\\'")}','${l.course_key}')">Call</button>
+    </div>
+  `).join("");
+}
+
+async function dialLead(phone, name, course_key) {
+  const form = new FormData();
+  form.append("phone", phone);
+  form.append("name", name);
+  form.append("course_key", course_key);
+  try {
+    const res = await axios.post(`${API}/api/call/dial`, form);
+    selectedCallId = phone;
+    alert(`Dialing ${name} (${phone}) — SID: ${res.data.call_sid}`);
+    refreshCalls();
+  } catch (e) {
+    alert(`Dial failed: ${e.response?.data?.detail || e.message}`);
+  }
+}
+
+document.getElementById("addLeadBtn").addEventListener("click", async () => {
+  const phone = document.getElementById("newPhone").value.trim();
+  const name = document.getElementById("newName").value.trim();
+  const course_key = document.getElementById("newCourse").value;
+  if (!phone || !name) return alert("Phone and name required");
+  const form = new FormData();
+  form.append("phone", phone); form.append("name", name); form.append("course_key", course_key);
+  await axios.post(`${API}/api/leads`, form);
+  document.getElementById("newPhone").value = "";
+  document.getElementById("newName").value = "";
+  loadLeads();
+});
+
+document.getElementById("customCallBtn").addEventListener("click", () => {
+  const phone = document.getElementById("customPhone").value.trim();
+  const name = document.getElementById("customName").value.trim() || "Lead";
+  const course_key = document.getElementById("customCourse").value;
+  if (!phone) return alert("Phone required");
+  dialLead(phone, name, course_key);
+});
+
+async function refreshCalls() {
+  const res = await axios.get(`${API}/api/monitor/calls`);
+  const box = document.getElementById("callsList");
+  box.innerHTML = res.data.map(c => `
+    <div class="bg-slate-800 rounded-lg px-3 py-2 text-xs cursor-pointer hover:bg-slate-700 ${selectedCallId === c.call_id ? 'ring-1 ring-emerald-500' : ''}"
+      onclick="selectCall('${c.call_id}')">
+      <div class="font-medium">${c.name || c.phone} <span class="text-slate-500">${c.phone}</span></div>
+      <div class="text-slate-500">
+        twilio: ${c.twilio_status || '-'} | final: ${c.final_status || 'in progress'} | events: ${c.events.length}
+      </div>
+    </div>
+  `).join("") || `<p class="text-slate-600 text-xs">No calls yet</p>`;
+
+  if (selectedCallId) loadCallDetail(selectedCallId);
+}
+
+function selectCall(callId) {
+  selectedCallId = callId;
+  refreshCalls();
+}
+
+async function loadCallDetail(callId) {
+  try {
+    const res = await axios.get(`${API}/api/monitor/calls/${encodeURIComponent(callId)}`);
+    const d = res.data;
+    document.getElementById("callMeta").innerHTML =
+      `${d.name} (${d.phone}) — course=${d.course_key}<br/>
+       twilio_sid=${d.twilio_sid || '-'} | twilio_status=${d.twilio_status || '-'} | duration=${d.call_duration_sec || '-'}s<br/>
+       final_status=${d.final_status || 'in progress'}`;
+
+    document.getElementById("callEvents").innerHTML = d.events.map(e => {
+      const t = new Date(e.ts * 1000).toLocaleTimeString();
+      const cls = levelColor[e.level] || levelColor.info;
+      return `<div class="log-line text-xs ${cls}">[${t}] <b>${e.type}</b>: ${e.message}</div>`;
+    }).join("");
+
+    if (d.final_status) {
+      try {
+        const t = await axios.get(`${API}/api/transcript/${encodeURIComponent(d.phone)}`);
+        document.getElementById("transcriptBox").textContent = t.data.transcript;
+      } catch { document.getElementById("transcriptBox").textContent = "(no transcript yet)"; }
+    } else {
+      document.getElementById("transcriptBox").textContent = "";
+    }
+  } catch (e) {
+    // call may not exist yet right after dialing
+  }
+}
+
+loadCourses().then(loadLeads);
+refreshCalls();
+setInterval(() => { loadLeads(); refreshCalls(); }, 2000);
+</script>
+</body>
+</html>
